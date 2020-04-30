@@ -1,0 +1,379 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: BigData EMR POC transient job cluster - ingest from S3 - process - write to S3 result
+
+Parameters:
+  SparkRunnerScript:
+    Type: String
+    Default: s3://emr-autoterminating/spark_sql_runner.py
+    Description: Location of the Spark SQL runner pyspark script
+  MasterInstanceTypeParam: 
+    Type: String
+    Default: m5.xlarge
+    AllowedValues: 
+      - m3.medium
+      - m3.large
+      - m3.xlarge
+      - m3.2xlarge
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+      - m4.4xlarge
+      - m4.10xlarge
+      - m4.16xlarge
+      - m5.xlarge
+    Description: Allowed instances only within m3, m4 and m5 instance types. Default is m5.xlarge.
+  MasterInstanceVolNbr:
+    Type: Number
+    Default: 1
+    MaxValue: 10
+    MinValue: 1
+    Description: How many EBS Drives you want to attach to Data node. Allowed 1-10.
+  MasterInstanceVolSize:
+    Type: Number
+    MaxValue: 1000
+    MinValue: 100
+    Default: 100
+    Description: Define EBS size for Data nodes. Allowed values between 100-1000 GB.
+  FleetUsage:
+    Type: String
+    Default: "yes"
+    AllowedValues:
+        - "yes"
+        - "no"
+    Description: State if you want to use Fleet Spot Istances or not.
+  FleetClusterType:
+    Type: String
+    Default: m5-cluster
+    AllowedValues:
+        - m5-cluster
+        - c5-cluster
+        - r5-cluster
+    Description: Pick which instance type group cluster you want to apply.
+  FleetInstanceCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 100
+    Description: Number of Core/Data (fleet) nodes. Allowed between 1-24.
+  FleetDatanodeXLargeVolNbr:
+    Type: Number
+    Default: 2
+    MaxValue: 10
+    MinValue: 1
+    Description: How many EBS Drives you want to attach to xl Data node. Allowed 1-10.
+  FleetDatanodeXLargeVolSize:
+    Type: Number
+    Default: 100
+    MaxValue: 1000
+    MinValue: 100
+    Description: How big should each EBS volume be attached to xl Data node. Allowed values between 100-1000 GB.
+  FleetDatanodeXLargeBidPricePercentage:
+    Type: Number
+    Default: 50
+    MaxValue: 100
+    MinValue: 30
+    Description: What spot price percentage of the xl data node instance on-demand-price do you want to set? Allowed 30-100 percent.
+  FleetDatanode2XLargeVolNbr:
+    Type: Number
+    Default: 4
+    MaxValue: 10
+    MinValue: 1
+    Description: How many EBS Drives you want to attach to 2xl Data node. Allowed 1-10.
+  FleetDatanode2XLargeVolSize:
+    Type: Number
+    Default: 100
+    MaxValue: 1000
+    MinValue: 100
+    Description: How big should each EBS volume be attached to 2xl Data node. Allowed values between 100-1000 GB.
+  FleetDatanode2XLargeBidPricePercentage:
+    Type: Number
+    Default: 50
+    MaxValue: 100
+    MinValue: 30
+    Description: What spot price percentage of the 2xl data node instance on-demand-price do you want to set? Allowed 30-100 percent.
+  FleetDatanode4XLargeVolNbr:
+    Type: Number
+    Default: 8
+    MaxValue: 10
+    MinValue: 1
+    Description: How many EBS Drives you want to attach to 4xl Data node. Allowed 1-10.
+  FleetDatanode4XLargeVolSize:
+    Type: Number
+    Default: 100
+    MaxValue: 1000
+    MinValue: 100
+    Description: How big should each EBS volume be attached to 4xl Data node. Allowed values between 100-1000 GB.
+  FleetDatanode4XLargeBidPricePercentage:
+    Type: Number
+    Default: 50
+    MaxValue: 100
+    MinValue: 30
+    Description: What spot price percentage of the 4xl data node instance on-demand-price do you want to set? Allowed 30-100 percent.
+  SourceScript: 
+    Description: Location of Spark SQL script creating source tables from S3 for processing
+    Type: String
+  EtlScript: 
+    Description: Location of Spark SQL script processing and saving output data on S3
+    Type: String
+  CostCenter:
+    Type: Number
+    MaxValue: 9999999999
+    MinValue: 1000000000
+    Description: Please provide your Cost Center
+  Requestor:
+    Type: String
+    Description: Please provide your P&G ID
+  DataNodeEBSVolumeType:
+    Type: String
+    Default: gp2
+    AllowedValues:
+        - gp2
+        - st1
+    Description: Choose EBS type for Data nodes. Default is gp2.
+
+Mappings:
+  AccountMap:
+    "134628835163":
+        Name: "Enterprise"
+        Stage: "Prod"
+    "366222307368":
+        Name: "Enterprise-NonProd"
+        Stage: "NonProd"
+  Corefleetoptions: 
+    "m5-cluster":
+        fleetoption1: "m5.xlarge"
+        fleetoption2: "m5.2xlarge"
+        fleetoption3: "m5.4xlarge"
+    "c5-cluster":
+        fleetoption1: "c5.xlarge"
+        fleetoption2: "c5.2xlarge"
+        fleetoption3: "c5.4xlarge"
+    "r5-cluster": 
+        fleetoption1: "r5.xlarge"
+        fleetoption2: "r5.2xlarge"
+        fleetoption3: "r5.4xlarge"
+Conditions:
+
+  IsProd:
+    !Equals [!FindInMap [ AccountMap, !Ref "AWS::AccountId", Stage ], "Prod"]
+  FleetUsageCon:
+    !Equals [ !Ref "FleetUsage", "yes" ]
+
+Resources:
+
+  EmrTransientJobCluster: 
+    Type: "AWS::EMR::Cluster"
+    Properties: 
+      Name: "EmrTransientJobCluster"
+      JobFlowRole: "BIGDATA-EMR-EC2-IAM-ROLE-CICD-NONPROD"
+      ServiceRole: "BIGDATA-EMR-DEFAULTROLE-CICD-NONPROD"
+      Applications: 
+        - Name: Hive
+        - Name: Spark
+      ReleaseLabel: "emr-5.20.0"
+      SecurityConfiguration:
+        Fn::ImportValue: "EMR-SecurityConfiguration"
+      BootstrapActions: 
+        - 
+          Name: "CreateTerminationScript"
+          ScriptBootstrapAction: 
+            Path: "s3://elasticmapreduce/bootstrap-actions/run-if"
+            Args:
+              - "instance.isMaster=true"
+              - "echo -e \"sleep 240 \n aws emr terminate-clusters --cluster-ids `cat /mnt/var/lib/info/job-flow.json | grep jobFlowId | cut -f2 -d: | cut -f2 -d'\"'`\" > /home/hadoop/terminate.sh"
+        - 
+          Name: "ChmodTerminationScript"
+          ScriptBootstrapAction: 
+            Path: "s3://elasticmapreduce/bootstrap-actions/run-if"
+            Args:
+              - "instance.isMaster=true"
+              - "chmod +x /home/hadoop/terminate.sh"
+      Configurations:
+       -
+          Classification: "core-site"
+          ConfigurationProperties:
+            "fs.s3a.acl.default": "BucketOwnerFullControl"
+            "fs.s3.acl.default": "BucketOwnerFullControl"
+            "fs.s3a.canned.acl": "BucketOwnerFullControl"
+            "fs.s3.canned.acl": "BucketOwnerFullControl"
+            "fs.s3a.enableServerSideEncryption": "true"
+            "fs.s3.enableServerSideEncryption": "true"
+            "fs.s3a.serverSideEncryptionAlgorithm": "AES256"
+            "fs.s3.serverSideEncryptionAlgorithm": "AES256"
+            "yarn.nodemanager.disk-health-checker.max-disk-utilization-per-disk-percentage" : 99
+      Instances:
+        Ec2SubnetId: "subnet-f7c7faac" #Subnet in NONProd VPC
+        MasterInstanceFleet: 
+          InstanceTypeConfigs:
+            -
+              BidPriceAsPercentageOfOnDemandPrice: 50
+              InstanceType: 
+                Ref: "MasterInstanceTypeParam"
+              EbsConfiguration:
+                EbsBlockDeviceConfigs:
+                    - VolumeSpecification:
+                        SizeInGB:
+                          Ref: "MasterInstanceVolSize"
+                        VolumeType:
+                          Ref: "DataNodeEBSVolumeType"
+                      VolumesPerInstance:
+                        Ref: "MasterInstanceVolNbr"
+                EbsOptimized: true
+          LaunchSpecifications:
+             !If
+                - FleetUsageCon
+                - SpotSpecification:
+                    TimeoutDurationMinutes: 5
+                    TimeoutAction: "SWITCH_TO_ON_DEMAND"
+                - Ref: "AWS::NoValue"
+          Name: "MASTERFLEET"
+          TargetOnDemandCapacity:
+            !If
+                - FleetUsageCon
+                - 0
+                - 1
+          TargetSpotCapacity:
+            !If
+                - FleetUsageCon
+                - 1
+                - 0
+        CoreInstanceFleet: 
+          InstanceTypeConfigs:
+            -
+             BidPriceAsPercentageOfOnDemandPrice: 
+               Ref: "FleetDatanodeXLargeBidPricePercentage"
+             InstanceType: 
+               !FindInMap [ Corefleetoptions, !Ref "FleetClusterType", fleetoption1 ]
+             WeightedCapacity: 1
+             EbsConfiguration:
+               EbsBlockDeviceConfigs:
+                   - VolumeSpecification:
+                       SizeInGB:
+                         Ref: "FleetDatanodeXLargeVolSize"
+                       VolumeType:
+                         Ref: "DataNodeEBSVolumeType"
+                     VolumesPerInstance:
+                       Ref: "FleetDatanodeXLargeVolNbr"
+               EbsOptimized: true
+            -
+             BidPriceAsPercentageOfOnDemandPrice: 
+               Ref: "FleetDatanode2XLargeBidPricePercentage"
+             InstanceType: 
+               !FindInMap [ Corefleetoptions, !Ref "FleetClusterType", fleetoption2 ]
+             WeightedCapacity: 2
+             EbsConfiguration:
+               EbsBlockDeviceConfigs:
+                   - VolumeSpecification:
+                       SizeInGB:
+                         Ref: "FleetDatanode2XLargeVolSize"
+                       VolumeType:
+                         Ref: "DataNodeEBSVolumeType"
+                     VolumesPerInstance:
+                       Ref: "FleetDatanode2XLargeVolNbr"
+               EbsOptimized: true
+            -
+             BidPriceAsPercentageOfOnDemandPrice: 
+               Ref: "FleetDatanode4XLargeBidPricePercentage"
+             InstanceType: 
+               !FindInMap [ Corefleetoptions, !Ref "FleetClusterType", fleetoption3 ]
+             WeightedCapacity: 4
+             EbsConfiguration:
+               EbsBlockDeviceConfigs:
+                   - VolumeSpecification:
+                       SizeInGB:
+                         Ref: "FleetDatanode4XLargeVolSize"
+                       VolumeType:
+                         Ref: "DataNodeEBSVolumeType"
+                     VolumesPerInstance:
+                       Ref: "FleetDatanode4XLargeVolNbr"
+               EbsOptimized: true
+          LaunchSpecifications:
+             !If
+                - FleetUsageCon
+                - SpotSpecification:
+                    TimeoutDurationMinutes: 5
+                    TimeoutAction: "SWITCH_TO_ON_DEMAND"
+                - Ref: "AWS::NoValue"
+          Name: "COREFLEET"
+          TargetOnDemandCapacity:
+            !If
+                - FleetUsageCon
+                - 0
+                - Ref: "FleetInstanceCount"
+          TargetSpotCapacity:
+            !If
+                - FleetUsageCon
+                - Ref: "FleetInstanceCount"
+                - 0
+        AdditionalMasterSecurityGroups:
+          - Fn::ImportValue: "emr-base-sg"
+        AdditionalSlaveSecurityGroups:
+          - Fn::ImportValue: "emr-base-sg"
+        TerminationProtected: false
+      LogUri:
+        !If
+          - IsProd
+          - "s3://emr-logging/"
+          - "s3://emr-logging-nonprod/"
+      Tags: 
+        - 
+          Key: "Application_Name"
+          Value: "Big Data EMR"
+        - 
+          Key: "Mega_Id"
+          Value: "44C6461D58D24E0E"
+        - 
+          Key: "Cost_Center"
+          Value:
+            Ref: CostCenter
+        - 
+          Key: "Original_Requestor"
+          Value:
+            Ref: Requestor
+        - 
+          Key: "Owning_Role"
+          Value: "BIGG-A-PLFXXX-AD"
+        - 
+          Key: "Stage"
+          Value:
+            !FindInMap [ AccountMap, !Ref "AWS::AccountId", Stage ]
+      VisibleToAllUsers: true
+  CreateSource: 
+    Type: "AWS::EMR::Step"
+    Properties: 
+      ActionOnFailure: "CONTINUE"
+      HadoopJarStep: 
+        Args: 
+          - "spark-submit"
+          - Ref: SparkRunnerScript
+          - Ref: SourceScript
+        Jar: "command-runner.jar"
+      Name: "CreateSource"
+      JobFlowId: 
+        Ref: "EmrTransientJobCluster"
+  DestinationETL: 
+    Type: "AWS::EMR::Step"
+    Properties: 
+      ActionOnFailure: "CONTINUE"
+      HadoopJarStep: 
+        Args: 
+          - "spark-submit"
+          - Ref: SparkRunnerScript
+          - Ref: EtlScript
+        Jar: "command-runner.jar"
+      Name: "DestinationETL"
+      JobFlowId: 
+        Ref: "EmrTransientJobCluster"
+    DependsOn: CreateSource
+  TerminationStep: 
+    Type: "AWS::EMR::Step"
+    Properties: 
+      ActionOnFailure: "CONTINUE"
+      HadoopJarStep: 
+        Args: 
+          - "/home/hadoop/terminate.sh"
+        Jar: "s3://elasticmapreduce/libs/script-runner/script-runner.jar"
+      Name: "TerminationStep"
+      JobFlowId: 
+        Ref: "EmrTransientJobCluster"
+    DependsOn: DestinationETL

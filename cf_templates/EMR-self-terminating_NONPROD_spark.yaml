@@ -1,0 +1,247 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: BigData EMR POC transient job cluster - ingest from S3 - process - write to S3 result
+
+Parameters:
+  SparkRunnerScript:
+    Type: String
+    Default: s3://emr-autoterminating/spark_sql_runner.py
+    Description: Location of the Spark SQL runner pyspark script
+  InstanceTypeParam: 
+    Type: String
+    Default: m3.xlarge
+    AllowedValues: 
+      - m3.medium
+      - m3.large
+      - m3.xlarge
+      - m3.2xlarge
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+      - m4.4xlarge
+      - m4.10xlarge
+      - m4.16xlarge
+    Description: Allowed instances only within m3 and m4 instance types. Default is m3.xlarge.
+  InstanceCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 24
+    Description: Number of Data nodes. Allowed between 1-24.
+  SourceScript: 
+    Description: Location of Spark SQL script creating source tables from S3 for processing
+    Type: String
+  EtlScript: 
+    Description: Location of Spark SQL script processing and saving output data on S3
+    Type: String
+  CostCenter:
+    Type: Number
+    MaxValue: 9999999999
+    MinValue: 1000000000
+    Description: Please provide your Cost Center
+  Requestor:
+    Type: String
+    Description: Please provide your P&G ID
+  DataNodeEBSVolumeCount:
+    Type: Number
+    Default: 1
+    MaxValue: 10
+    MinValue: 1
+    Description: How many EBS Drives you want to attach to Data node. Allowed 1-10.
+  DataNodeEBSVolumeType:
+    Type: String
+    Default: gp2
+    AllowedValues:
+        - gp2
+        - st1
+    Description: Choose EBS type for Data nodes. Default is gp2.
+  DataNodeEBSVolumeSize:
+    Type: Number
+    MaxValue: 1000
+    MinValue: 100
+    Description: Define EBS size for Data nodes. Allowed values between 100-1000 GB.  
+  AWSGlue:
+    Type: String
+    Default: 'yes'
+    AllowedValues:
+      - 'yes'
+      - 'no'
+    Description: Pls state if you want to use AWS Glue as your metastore. 'yes' indicates you want to use it.
+
+Mappings:
+
+  AccountMap:
+    "134628835163":
+        Name: "Enterprise"
+        Stage: "Prod"
+    "366222307368":
+        Name: "Enterprise-NonProd"
+        Stage: "NonProd"
+
+Conditions:
+
+  IsProd:
+    !Equals [!FindInMap [ AccountMap, !Ref "AWS::AccountId", Stage ], "Prod"]
+
+  AWSGlueCon: !Equals 
+    - !Ref AWSGlue
+    - 'yes'
+
+Resources:
+
+  EmrTransientJobCluster: 
+    Type: "AWS::EMR::Cluster"
+    Properties: 
+      Name: "EmrTransientJobCluster"
+      JobFlowRole: "BIGDATA-EMR-EC2-IAM-ROLE-CICD-NONPROD"
+      ServiceRole: "BIGDATA-EMR-DEFAULTROLE-CICD-NONPROD"
+      Applications: 
+        - Name: Hive
+        - Name: Spark
+      ReleaseLabel: "emr-5.20.0"
+      SecurityConfiguration:
+        Fn::ImportValue: "EMR-SecurityConfiguration"
+      BootstrapActions: 
+        - 
+          Name: "CreateTerminationScript"
+          ScriptBootstrapAction: 
+            Path: "s3://elasticmapreduce/bootstrap-actions/run-if"
+            Args:
+              - "instance.isMaster=true"
+              - "echo -e \"sleep 240 \n aws emr terminate-clusters --cluster-ids `cat /mnt/var/lib/info/job-flow.json | grep jobFlowId | cut -f2 -d: | cut -f2 -d'\"'`\" > /home/hadoop/terminate.sh"
+        - 
+          Name: "ChmodTerminationScript"
+          ScriptBootstrapAction: 
+            Path: "s3://elasticmapreduce/bootstrap-actions/run-if"
+            Args:
+              - "instance.isMaster=true"
+              - "chmod +x /home/hadoop/terminate.sh"
+      Configurations:
+        -
+          Classification: "core-site"
+          ConfigurationProperties:
+            "fs.s3a.acl.default": "BucketOwnerFullControl"
+            "fs.s3.acl.default": "BucketOwnerFullControl"
+            "fs.s3a.canned.acl": "BucketOwnerFullControl"
+            "fs.s3.canned.acl": "BucketOwnerFullControl"
+            "fs.s3a.enableServerSideEncryption": "true"
+            "fs.s3.enableServerSideEncryption": "true"
+            "fs.s3a.serverSideEncryptionAlgorithm": "AES256"
+            "fs.s3.serverSideEncryptionAlgorithm": "AES256"
+            "yarn.nodemanager.disk-health-checker.max-disk-utilization-per-disk-percentage" : 99
+        - !If 
+          - AWSGlueCon
+          - Classification: hive-site
+            ConfigurationProperties:
+              hive.metastore.client.factory.class: com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory
+          - !Ref 'AWS::NoValue'
+        - !If 
+          - AWSGlueCon
+          - Classification: spark-hive-site
+            ConfigurationProperties:
+              hive.metastore.client.factory.class: com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory
+          - !Ref 'AWS::NoValue'
+
+      Instances:
+        Ec2SubnetId: "subnet-f7c7faac" #Subnet in NONProd VPC
+        MasterInstanceGroup: 
+          EbsConfiguration:
+            EbsBlockDeviceConfigs:
+                - VolumeSpecification:
+                    SizeInGB: 100
+                    VolumeType: gp2
+                  VolumesPerInstance: 2
+            EbsOptimized: true
+          InstanceCount: 1
+          InstanceType: 
+            Ref: "InstanceTypeParam"
+          Market: "ON_DEMAND"
+          Name: "Master"
+        CoreInstanceGroup: 
+          EbsConfiguration:
+            EbsBlockDeviceConfigs:
+                - VolumeSpecification:
+                    SizeInGB:
+                        Ref: "DataNodeEBSVolumeSize"
+                    VolumeType: 
+                        Ref: "DataNodeEBSVolumeType"
+                  VolumesPerInstance: 
+                    Ref: "DataNodeEBSVolumeCount"
+            EbsOptimized: true
+          InstanceCount: 
+            Ref: "InstanceCount"
+          InstanceType: 
+            Ref: "InstanceTypeParam"
+          Market: "ON_DEMAND"
+          Name: "Core"
+        AdditionalMasterSecurityGroups:
+          - Fn::ImportValue: "emr-base-sg"
+        AdditionalSlaveSecurityGroups:
+          - Fn::ImportValue: "emr-base-sg"
+        TerminationProtected: false
+      LogUri:
+        !If
+          - IsProd
+          - "s3://emr-logging/"
+          - "s3://emr-logging-nonprod/"
+      Tags: 
+        - 
+          Key: "Application_Name"
+          Value: "Big Data EMR"
+        - 
+          Key: "Mega_Id"
+          Value: "44C6461D58D24E0E"
+        - 
+          Key: "Cost_Center"
+          Value:
+            Ref: CostCenter
+        - 
+          Key: "Original_Requestor"
+          Value:
+            Ref: Requestor
+        - 
+          Key: "Owning_Role"
+          Value: "BIGG-A-PLFXXX-AD"
+        - 
+          Key: "Stage"
+          Value:
+            !FindInMap [ AccountMap, !Ref "AWS::AccountId", Stage ]
+      VisibleToAllUsers: true
+  CreateSource: 
+    Type: "AWS::EMR::Step"
+    Properties: 
+      ActionOnFailure: "CONTINUE"
+      HadoopJarStep: 
+        Args: 
+          - "spark-submit"
+          - Ref: SparkRunnerScript
+          - Ref: SourceScript
+        Jar: "command-runner.jar"
+      Name: "CreateSource"
+      JobFlowId: 
+        Ref: "EmrTransientJobCluster"
+  DestinationETL: 
+    Type: "AWS::EMR::Step"
+    Properties: 
+      ActionOnFailure: "CONTINUE"
+      HadoopJarStep: 
+        Args: 
+          - "spark-submit"
+          - Ref: SparkRunnerScript
+          - Ref: EtlScript
+        Jar: "command-runner.jar"
+      Name: "DestinationETL"
+      JobFlowId: 
+        Ref: "EmrTransientJobCluster"
+    DependsOn: CreateSource
+  TerminationStep: 
+    Type: "AWS::EMR::Step"
+    Properties: 
+      ActionOnFailure: "CONTINUE"
+      HadoopJarStep: 
+        Args: 
+          - "/home/hadoop/terminate.sh"
+        Jar: "s3://elasticmapreduce/libs/script-runner/script-runner.jar"
+      Name: "TerminationStep"
+      JobFlowId: 
+        Ref: "EmrTransientJobCluster"
+    DependsOn: DestinationETL

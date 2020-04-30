@@ -1,0 +1,7 @@
+{
+  "CostCenter": 1000501420,
+  "Requestor": "JENKINS-PIPELINE",
+  "DataNodeEBSVolumeSize": 100,
+  "EtlScript": "s3://emr-autoterminating/test_scripts/spark_job/etlScript.sql",
+  "SourceScript": "s3://emr-autoterminating/test_scripts/spark_job/sourceScript.sql"
+}

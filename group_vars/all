@@ -1,0 +1,5 @@
+---
+stack_prefix: BIGDATA-EMR-JOB-CLUSTER-CICD
+master_template: jupyter_notebook_with_cluster_e2e.json
+bucketname: pg-bigdata-nonprod
+subdirectory: cicd-cf-temp/emrjobcluster
